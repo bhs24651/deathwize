@@ -1,20 +1,79 @@
 /*
-DeathWize v1.0
+DeathWize v1.0.1
 A LineWize Killer, developed by Jason Wu
+
+WHAT'S NEW:
+  - Bug Fixes for the original DeathWize, where the program refuses
+    to run due to some files missing
 */
 
 #include <windows.h>
-#include <comdef.h>
-#include <Wbemidl.h>
+#include <tlhelp32.h>
+#include <winternl.h>
 #include <iostream>
-#include <string>
 #include <vector>
+#include <string>
+#include <tchar.h>
 #include <algorithm>
 
-#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ntdll.lib")
 
-// global vector to store extension process PIDs
-std::vector<int> extension_PIDs;
+// NT structures for internal access
+typedef NTSTATUS(WINAPI* pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+bool ProcessHasExtensionFlag(DWORD pid) {
+    bool isExtension = false;
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hProcess) return false;
+
+    HMODULE hNtdll = GetModuleHandle(TEXT("ntdll.dll"));
+    if (!hNtdll) {
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    pNtQueryInformationProcess NtQueryInformationProcess = (pNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
+    if (!NtQueryInformationProcess) {
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    PROCESS_BASIC_INFORMATION pbi;
+    ZeroMemory(&pbi, sizeof(pbi));
+
+    if (NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), NULL) != 0) {
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    PEB peb;
+    if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), NULL)) {
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    RTL_USER_PROCESS_PARAMETERS params;
+    if (!ReadProcessMemory(hProcess, peb.ProcessParameters, &params, sizeof(params), NULL)) {
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    WCHAR commandLine[4096];
+    ZeroMemory(commandLine, sizeof(commandLine));
+    if (!ReadProcessMemory(hProcess, params.CommandLine.Buffer, &commandLine, params.CommandLine.Length, NULL)) {
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    std::wstring cmd(commandLine);
+    if (cmd.find(L"--extension-process") != std::wstring::npos) {
+        isExtension = true;
+    }
+
+    CloseHandle(hProcess);
+    return isExtension;
+}
 
 // Function to kill a process by its PID
 bool KillProcessByID(DWORD processID) {
@@ -30,171 +89,37 @@ bool KillProcessByID(DWORD processID) {
         return false;
     }
 
-    // std::cout << "Process with ID " << processID << " terminated." << std::endl;
     CloseHandle(hProcess);
     return true;
 }
 
-int processCheck() {
-    HRESULT hres;
+std::vector<DWORD> FindChromeExtensionProcesses() {
+    std::vector<DWORD> chromePIDs;
 
-    // Initialize COM
-    hres = CoInitializeEx(0, COINIT_MULTITHREADED);
-    if (FAILED(hres)) {
-        std::cerr << "Failed to initialize COM library. Error code = 0x"
-                  << std::hex << hres << std::endl;
-        return 1;
-    }
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) return chromePIDs;
 
-    // Set general COM security levels
-    hres = CoInitializeSecurity(
-        NULL,
-        -1,                          // COM authentication
-        NULL,                        // Authentication services
-        NULL,                        // Reserved
-        RPC_C_AUTHN_LEVEL_DEFAULT,   // Default authentication 
-        RPC_C_IMP_LEVEL_IMPERSONATE, // Default Impersonation  
-        NULL,                        // Authentication info
-        EOAC_NONE,                   // Additional capabilities 
-        NULL                         // Reserved
-    );
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
 
-    if (FAILED(hres)) {
-        std::cerr << "Failed to initialize security. Error code = 0x"
-                  << std::hex << hres << std::endl;
-        CoUninitialize();
-        return 1;
-    }
-
-    // Obtain the initial locator to WMI 
-    IWbemLocator *pLoc = NULL;
-
-    hres = CoCreateInstance(
-        CLSID_WbemLocator,             
-        0, 
-        CLSCTX_INPROC_SERVER, 
-        IID_IWbemLocator, (LPVOID *)&pLoc);
-
-    if (FAILED(hres)) {
-        std::cerr << "Failed to create IWbemLocator object. Error code = 0x"
-                  << std::hex << hres << std::endl;
-        CoUninitialize();
-        return 1;
-    }
-
-    IWbemServices *pSvc = NULL;
-
-    // Use SysAllocString instead of _bstr_t
-    BSTR namespaceStr = SysAllocString(L"ROOT\\CIMV2");
-
-    // Connect to WMI namespace
-    hres = pLoc->ConnectServer(
-        namespaceStr,            // WMI namespace
-        NULL,                    // User name
-        NULL,                    // User password
-        NULL,                    // Locale
-        0,                       // Security flags (changed from NULL to 0)
-        NULL,                    // Authority
-        NULL,                    // Context object
-        &pSvc                    // IWbemServices proxy
-    );
-
-    SysFreeString(namespaceStr);
-
-    if (FAILED(hres)) {
-        std::cerr << "Could not connect to WMI namespace. Error code = 0x"
-                  << std::hex << hres << std::endl;
-        pLoc->Release();     
-        CoUninitialize();
-        return 1;
-    }
-
-    // Set security levels on the proxy
-    hres = CoSetProxyBlanket(
-        pSvc,                        // Indicates the proxy to set
-        RPC_C_AUTHN_WINNT,           // RPC_C_AUTHN_xxx
-        RPC_C_AUTHZ_NONE,            // RPC_C_AUTHZ_xxx
-        NULL,                        // Server principal name 
-        RPC_C_AUTHN_LEVEL_CALL,      // RPC_C_AUTHN_LEVEL_xxx 
-        RPC_C_IMP_LEVEL_IMPERSONATE, // RPC_C_IMP_LEVEL_xxx
-        NULL,                        // client identity
-        EOAC_NONE                    // proxy capabilities 
-    );
-
-    if (FAILED(hres)) {
-        std::cerr << "Could not set proxy blanket. Error code = 0x"
-                  << std::hex << hres << std::endl;
-        pSvc->Release();
-        pLoc->Release();     
-        CoUninitialize();
-        return 1;
-    }
-
-    // Use WQL to query all chrome.exe processes
-    IEnumWbemClassObject* pEnumerator = NULL;
-    BSTR query = SysAllocString(L"SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name = 'chrome.exe'");
-    BSTR queryLanguage = SysAllocString(L"WQL");
-
-    hres = pSvc->ExecQuery(
-        queryLanguage, 
-        query,
-        WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, 
-        NULL,
-        &pEnumerator);
-
-    SysFreeString(query);
-    SysFreeString(queryLanguage);
-
-    if (FAILED(hres)) {
-        std::cerr << "WMI query failed. Error code = 0x"
-                  << std::hex << hres << std::endl;
-        pSvc->Release();
-        pLoc->Release();
-        CoUninitialize();
-        return 1;
-    }
-
-    IWbemClassObject *pclsObj = NULL;
-    ULONG uReturn = 0;
-
-    while (pEnumerator) {
-        HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
-        if (0 == uReturn) break;
-
-        VARIANT vtProcessId;
-        VARIANT vtCommandLine;
-
-        hr = pclsObj->Get(L"ProcessId", 0, &vtProcessId, 0, 0);
-        hr = pclsObj->Get(L"CommandLine", 0, &vtCommandLine, 0, 0);
-
-        if (vtCommandLine.vt == VT_BSTR && vtCommandLine.bstrVal != NULL) {
-            // check if the process is a chrome extension process
-            std::wstring commandline_wstr = vtCommandLine.bstrVal;
-            std::string commandline_str(commandline_wstr.begin(), commandline_wstr.end());
-            if (commandline_str.find("--extension-process") != std::string::npos) {
-                extension_PIDs.push_back(vtProcessId.uintVal); // if it is, append PID
+    if (Process32First(hSnapshot, &pe)) {
+        do {
+            if (_tcsicmp(pe.szExeFile, TEXT("chrome.exe")) == 0) {
+                if (ProcessHasExtensionFlag(pe.th32ProcessID)) {
+                    chromePIDs.push_back(pe.th32ProcessID);
+                }
             }
-        }
-
-        VariantClear(&vtProcessId);
-        VariantClear(&vtCommandLine);
-        pclsObj->Release();
+        } while (Process32Next(hSnapshot, &pe));
     }
 
-    // Cleanup
-    pEnumerator->Release();
-    pSvc->Release();
-    pLoc->Release();
-    CoUninitialize();
-
-    return 0;
+    CloseHandle(hSnapshot);
+    return chromePIDs;
 }
 
 int main() {
-
-    // foreword
+    // same message from the original version
     std::string msg = "\n"
-                    "DeathWize v1.0\n"
+                    "DeathWize v1.0.1\n"
                     "A LineWize Killer, developed by Jason Wu\n"
                     "\n"
                     "Before you continue:\n"
@@ -219,30 +144,21 @@ int main() {
             "\n"
             "Debug statements will be shown below:";
         std::cout << msg << std::endl;
+    }
 
-        // loop to check for and kill Chrome Extension Processes 
-        while (1==1) {
-            processCheck();
+    while (true) {
+        std::vector<DWORD> chromePIDs = FindChromeExtensionProcesses();
 
-            // std::cout << "Found Chrome Extension Processes: ";
-            // for (int id : extension_PIDs) {
-            //     std::cout << id << ", ";
-            // }
-            // std::cout << std::endl;
-
-            // Kill all processes with "--extension-process" in CommandLine
-            for (int id : extension_PIDs) {
-                KillProcessByID(id);
-            }
-
-            extension_PIDs = {};
+        for (DWORD pid : chromePIDs) {
+            KillProcessByID(pid);
         }
     }
+
     return 0;
 }
 
 // If you want to compile from source:
-// compile with: g++ deathwize.cpp -o deathwize.exe -lole32 -loleaut32 -luuid -lwbemuuid
-// run with: ./deathwize
+// compile with: g++ deathwize_lite.cpp -o deathwize_lite.exe -static
+// run with: ./deathwize_lite
 
 // I recommend that you save the run command in a batch file for easy access.
