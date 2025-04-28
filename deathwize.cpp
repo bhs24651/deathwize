@@ -158,7 +158,7 @@ int main() {
 }
 
 // If you want to compile from source:
-// compile with: g++ deathwize_lite.cpp -o deathwize_lite.exe -static
-// run with: ./deathwize_lite
+// compile with: g++ deathwize.cpp -o deathwize.exe -static
+// run with: ./deathwize
 
 // I recommend that you save the run command in a batch file for easy access.
