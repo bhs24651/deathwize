@@ -1,0 +1,10 @@
+COMPATIBILITY
+
+This program is compatible with Windows 7 and later versions.
+Admin privileges are recommended, but not necessary to run the
+program.
+
+It is normal for the program to show up as "suspicious" when you 
+run it for the first time. 
+This is because it is not signed with a certificate. You can safely
+ignore this warning and run the program.
