@@ -8,3 +8,8 @@ It is normal for the program to show up as "suspicious" when you
 run it for the first time. 
 This is because it is not signed with a certificate. You can safely
 ignore this warning and run the program.
+
+If you find that you cannot access the web even after enabling
+DeathWize, it is most likely that your administrator has enabled
+a filtering server on your network. If that is the case, use
+a VPN to help with the effectiveness of DeathWize.
