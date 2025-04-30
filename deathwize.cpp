@@ -1,10 +1,12 @@
 /*
-DeathWize v1.0.1
-A LineWize Killer, developed by Jason Wu
+DeathWize v1.1
+A Linewize Killer, developed by Jason Wu
 
 WHAT'S NEW:
-  - Bug Fixes for the original DeathWize, where the program refuses
-    to run due to some files missing
+  - Allowlisting now prevents what could most likely be system and 
+    other unkillable processes from being killed too many times
+  - Added delay between process scans: Slightly weaker performance,
+    but DeathWize is now 10x more Energy Efficient!
 */
 
 #include <windows.h>
@@ -15,11 +17,16 @@ WHAT'S NEW:
 #include <string>
 #include <tchar.h>
 #include <algorithm>
+#include <map>
 
 #pragma comment(lib, "ntdll.lib")
 
 // NT structures for internal access
 typedef NTSTATUS(WINAPI* pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+// initialize Process Allowlist variables (globally)
+std::map<DWORD, int> ProcessKillFailCounter;
+std::vector<DWORD> ProcessAllowlist; // unkillable processes (usually System ones) will end up here
 
 bool ProcessHasExtensionFlag(DWORD pid) {
     bool isExtension = false;
@@ -83,8 +90,28 @@ bool KillProcessByID(DWORD processID) {
         return false;
     }
 
-    if (!TerminateProcess(hProcess, 0)) {
-        std::cerr << "Failed to terminate process with ID " << processID << ". Error: " << GetLastError() << std::endl;
+    // check if the process is on the allowlist
+    if (std::find(ProcessAllowlist.begin(), ProcessAllowlist.end(), processID) == ProcessAllowlist.end()) {
+        if (!TerminateProcess(hProcess, 0)) {
+            std::cerr << "Failed to terminate process with ID " << processID << ". Error: " << GetLastError() << std::endl;
+            CloseHandle(hProcess);
+            // if an attempt to kill the process fails, log it in the kill fail counter
+            if (ProcessKillFailCounter.find(processID) != ProcessKillFailCounter.end() && GetLastError() == 5) {
+                int a = ProcessKillFailCounter[processID];
+                ProcessKillFailCounter.erase(processID);
+                ProcessKillFailCounter.insert(std::make_pair(processID, a+1));
+                // if 10 attempts to kill process reached, add it to the allowlist
+                if (ProcessKillFailCounter[processID] >= 10) {
+                    ProcessAllowlist.push_back(processID);
+                    ProcessKillFailCounter.erase(processID);
+                    std::cerr << "Process with ID " << processID << " added to Allowlist.";
+                }
+            } else if (GetLastError() == 5) {
+                ProcessKillFailCounter.insert(std::make_pair(processID, 1));
+            }
+            return false;
+        }
+    } else {
         CloseHandle(hProcess);
         return false;
     }
@@ -119,19 +146,21 @@ std::vector<DWORD> FindChromeExtensionProcesses() {
 int main() {
     // same message from the original version
     std::string msg = "\n"
-                    "DeathWize v1.0.1\n"
-                    "A LineWize Killer, developed by Jason Wu\n"
+                    "DeathWize v1.1\n"
+                    "A Linewize Killer, developed by Jason Wu\n"
                     "\n"
-                    "WHAT'S NEW: \n"
-                    "  - Bug Fixes for the original DeathWize, where the program refuses\n"
-                    "    to run due to some files missing\n"
+                    "WHAT'S NEW:\n"
+                    "  - Allowlisting now prevents what could most likely be system and\n"
+                    "    other unkillable processes from being killed too many times   \n"
+                    "  - Added delay between process scans: Slightly weaker performance,\n"
+                    "    but DeathWize is now 10x more Energy Efficient!               \n"
                     "\n"
                     "Before you continue:\n"
                     "\n"
                     "Due to the limitations of the Task Manager and the nature of this\n"
                     "program, you will not be able to access other Chrome Extensions  \n"
                     "while DeathWize is running. Please read the terms in the README  \n"
-                    "file, ensure you have opened the Chrome profile with the LineWize\n"
+                    "file, ensure you have opened the Chrome profile with the Linewize\n"
                     "extension installed and save any unsaved work before proceeding. \n"
                     "\n"
                     "Continue? (Y/n) ";
@@ -156,6 +185,9 @@ int main() {
             for (DWORD pid : chromePIDs) {
                 KillProcessByID(pid);
             }
+
+            // Delay before next scan
+            Sleep(1000);
         }
     }
     return 0;
