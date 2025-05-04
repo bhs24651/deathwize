@@ -1,12 +1,17 @@
 /*
-DeathWize v1.1
-A Linewize Killer, developed by Jason Wu
+========================================================
+DeathWize – Chrome Extension Process Controller
+Version 1.2
+Developed by Jason Wu
+========================================================
 
 WHAT'S NEW:
-  - Allowlisting now prevents what could most likely be system and 
-    other unkillable processes from being killed too many times
-  - Added delay between process scans: Slightly weaker performance,
-    but DeathWize is now 10x more Energy Efficient!
+  - Delay between process scans is now customizable, thanks to the
+    new "-i/--interval <delay_ms>" flag. Try it out for yourself!
+  - Next-Gen Adaptive Allowlisting means Processes that repeatedly
+    fail to terminate are now handled dynamically based on failure
+    count, and allowlist now removes processes that have already 
+    been successfully terminated
 */
 
 #include <windows.h>
@@ -18,15 +23,27 @@ WHAT'S NEW:
 #include <tchar.h>
 #include <algorithm>
 #include <map>
+#include <chrono>
+#include <iomanip>
 
 #pragma comment(lib, "ntdll.lib")
 
 // NT structures for internal access
 typedef NTSTATUS(WINAPI* pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
 
-// initialize Process Allowlist variables (globally)
-std::map<DWORD, int> ProcessKillFailCounter;
-std::vector<DWORD> ProcessAllowlist; // unkillable processes (usually System ones) will end up here
+// Allowlist entry with backoff
+struct AllowlistEntry {
+    int failCount = 0;
+    std::chrono::steady_clock::time_point lastAttempt;
+    bool shouldBackoff() {
+        using namespace std::chrono;
+        int waitTime = std::min(failCount * 1000, 10000); // linear backoff up to 10s
+        return duration_cast<milliseconds>(steady_clock::now() - lastAttempt).count() < waitTime;
+    }
+};
+
+std::map<DWORD, AllowlistEntry> ProcessAllowlist;
+int scanIntervalMs = 1000; // default interval
 
 bool ProcessHasExtensionFlag(DWORD pid) {
     bool isExtension = false;
@@ -82,41 +99,34 @@ bool ProcessHasExtensionFlag(DWORD pid) {
     return isExtension;
 }
 
-// Function to kill a process by its PID
 bool KillProcessByID(DWORD processID) {
+    auto& entry = ProcessAllowlist[processID];
+    if (entry.failCount > 0 && entry.shouldBackoff()) {
+        std::cout << "Skipping PID " << processID << " due to backoff (failCount=" << entry.failCount << ")\n";
+        return false;
+    }
+    entry.lastAttempt = std::chrono::steady_clock::now();
+
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processID);
     if (hProcess == NULL) {
         std::cerr << "Failed to open process with ID " << processID << ". Error: " << GetLastError() << std::endl;
+        entry.failCount++;
         return false;
     }
 
-    // check if the process is on the allowlist
-    if (std::find(ProcessAllowlist.begin(), ProcessAllowlist.end(), processID) == ProcessAllowlist.end()) {
-        if (!TerminateProcess(hProcess, 0)) {
-            std::cerr << "Failed to terminate process with ID " << processID << ". Error: " << GetLastError() << std::endl;
-            CloseHandle(hProcess);
-            // if an attempt to kill the process fails, log it in the kill fail counter
-            if (ProcessKillFailCounter.find(processID) != ProcessKillFailCounter.end() && GetLastError() == 5) {
-                int a = ProcessKillFailCounter[processID];
-                ProcessKillFailCounter.erase(processID);
-                ProcessKillFailCounter.insert(std::make_pair(processID, a+1));
-                // if 10 attempts to kill process reached, add it to the allowlist
-                if (ProcessKillFailCounter[processID] >= 10) {
-                    ProcessAllowlist.push_back(processID);
-                    ProcessKillFailCounter.erase(processID);
-                    std::cerr << "Process with ID " << processID << " added to Allowlist.";
-                }
-            } else if (GetLastError() == 5) {
-                ProcessKillFailCounter.insert(std::make_pair(processID, 1));
-            }
-            return false;
-        }
-    } else {
+    if (!TerminateProcess(hProcess, 0)) {
+        DWORD err = GetLastError();
+        std::cerr << "Failed to terminate process with ID " << processID << ". Error: " << err << std::endl;
         CloseHandle(hProcess);
+        if (err == 5) {
+            entry.failCount++;
+        }
         return false;
     }
 
     CloseHandle(hProcess);
+    // std::cout << "Terminated extension process with PID " << processID << "." << std::endl;
+    ProcessAllowlist.erase(processID); // success, remove from list
     return true;
 }
 
@@ -143,17 +153,40 @@ std::vector<DWORD> FindChromeExtensionProcesses() {
     return chromePIDs;
 }
 
-int main() {
-    // same message from the original version
-    std::string msg = "\n"
-                    "DeathWize v1.1\n"
-                    "A Linewize Killer, developed by Jason Wu\n"
+void ParseArguments(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "--interval" || arg == "-i") && i + 1 < argc) {
+            int value = atoi(argv[i + 1]);
+            if (value >= 40 && value <= 2000) {
+                scanIntervalMs = value;
+                std::cout << "[CONFIG] Set scan interval to " << scanIntervalMs << " ms." << std::endl;
+            } else {
+                std::cerr << "[WARNING] Invalid interval. Must be between 40 and 2000 ms. Using default 1000 ms." << std::endl;
+            }
+            i++; // skip next
+        }
+    }
+}
+
+int main(int argc, char* argv[]) {
+    // parse flags, such as --interval before program starts
+    ParseArguments(argc, argv);
+    // output a brief description about this program
+    std::string msg = 
+                    "========================================================\n"
+                    "DeathWize - Chrome Extension Process Controller\n"
+                    "Version 1.2\n"
+                    "Developed by Jason Wu\n"
+                    "========================================================\n"
                     "\n"
                     "WHAT'S NEW:\n"
-                    "  - Allowlisting now prevents what could most likely be system and\n"
-                    "    other unkillable processes from being killed too many times   \n"
-                    "  - Added delay between process scans: Slightly weaker performance,\n"
-                    "    but DeathWize is now 10x more Energy Efficient!               \n"
+                    "  - Delay between process scans is now customizable, thanks to the\n"
+                    "    new \"-i/--interval <delay_ms>\" flag. Try it out for yourself! \n"
+                    "  - Next-Gen Adaptive Allowlisting means Processes that repeatedly\n"
+                    "    fail to terminate are now handled dynamically based on failure\n"
+                    "    count, and allowlist now removes processes that have already  \n"
+                    "    been successfully terminated\n"
                     "\n"
                     "Before you continue:\n"
                     "\n"
@@ -177,7 +210,6 @@ int main() {
             "\n"
             "Debug statements will be shown below:";
         std::cout << msg << std::endl;
-    
 
         while (true) {
             std::vector<DWORD> chromePIDs = FindChromeExtensionProcesses();
@@ -186,8 +218,7 @@ int main() {
                 KillProcessByID(pid);
             }
 
-            // Delay before next scan
-            Sleep(1000);
+            Sleep(scanIntervalMs);
         }
     }
     return 0;
@@ -195,6 +226,6 @@ int main() {
 
 // If you want to compile from source:
 // compile with: g++ deathwize.cpp -o deathwize.exe -static
-// run with: ./deathwize
+// run with: ./deathwize [-i/--interval <delay_ms>]
 
 // I recommend that you save the run command in a batch file for easy access.
