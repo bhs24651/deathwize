@@ -1,17 +1,17 @@
 /*
 ========================================================
 DeathWize – Chrome Extension Process Controller
-Version 1.2
+Version 1.3
 Developed by Jason Wu
 ========================================================
 
 WHAT'S NEW:
-  - Delay between process scans is now customizable, thanks to the
-    new "-i/--interval <delay_ms>" flag. Try it out for yourself!
-  - Next-Gen Adaptive Allowlisting means Processes that repeatedly
-    fail to terminate are now handled dynamically based on failure
-    count, and allowlist now removes processes that have already 
-    been successfully terminated
+  - More flags added: --duration/-d now sets the program to run for
+    a specified time in seconds. SAVES EVEN MORE BATTERY THAN BEFORE
+    (that is, if you actually use it), and also the --help/-h flag, 
+    which shows all available arguments.
+  - Added summary report: Now you can see how much work DeathWize
+    has done for you once you exit the program. Isn't that cool?
 */
 
 #include <windows.h>
@@ -25,6 +25,11 @@ WHAT'S NEW:
 #include <map>
 #include <chrono>
 #include <iomanip>
+#include <csignal>
+
+#ifdef min
+#undef min
+#endif
 
 #pragma comment(lib, "ntdll.lib")
 
@@ -44,6 +49,14 @@ struct AllowlistEntry {
 
 std::map<DWORD, AllowlistEntry> ProcessAllowlist;
 int scanIntervalMs = 1000; // default interval
+int runDurationSec = -1; // -1 means run forever
+
+// Global counters for process statistics
+int totalFound = 0;
+int totalTerminated = 0;
+int totalFailed = 0;
+int totalSkipped = 0;
+bool interrupted = false;
 
 bool ProcessHasExtensionFlag(DWORD pid) {
     bool isExtension = false;
@@ -166,35 +179,76 @@ void ParseArguments(int argc, char* argv[]) {
             }
             i++; // skip next
         }
+        // New flag: --duration or -d <seconds>
+        if ((arg == "--duration" || arg == "-d") && i + 1 < argc) {
+            int value = atoi(argv[i + 1]);
+            if (value > 0) {
+                runDurationSec = value;
+                std::cout << "[CONFIG] Set run duration to " << runDurationSec << " seconds." << std::endl;
+            } else {
+                std::cerr << "[WARNING] Invalid duration. Must be a positive integer. Running indefinitely." << std::endl;
+            }
+            i++;
+        }
+        // New flag: --help or -h
+        if (arg == "--help" || arg == "-h") {
+            std::cout << "USAGE: deathwize [-i/--interval <delay_ms>] [-d/--duration <seconds>] [-h/--help]\n";
+            std::cout << "  -i/--interval <delay_ms>   Set the delay between scans (default: 1000 ms)\n";
+            std::cout << "  -d/--duration <seconds>    Set the duration to run the program (default: run indefinitely)\n";
+            std::cout << "  -h/--help                  Show this help message\n";
+            exit(0);
+        }
     }
 }
 
+void PrintSummaryReport() {
+    if (interrupted) {
+        std::cout << "[INFO] Program interrupted by user (Ctrl+C)." << std::endl;
+    }
+    std::cout << "\n==================== SUMMARY ====================\n";
+    std::cout << "Total Chrome extension processes found: " << totalFound << std::endl;
+    std::cout << "Total processes terminated: " << totalTerminated << std::endl;
+    std::cout << "Total failures: " << totalFailed << std::endl;
+    std::cout << "Total skipped due to backoff: " << totalSkipped << std::endl;
+    std::cout <<  "================================================\n";
+    std::cout << "If you enjoyed the program, why not spread the word about it?" << std::endl;
+    std::cout << std::endl;
+    system("pause");
+}
+
+void signalHandler(int signum) {
+    interrupted = true;
+    PrintSummaryReport();
+    exit(signum);
+}
+
 int main(int argc, char* argv[]) {
-    // parse flags, such as --interval before program starts
+    // parse flags, such as --interval and --duration before program starts
     ParseArguments(argc, argv);
     // output a brief description about this program
     std::string msg = 
                     "========================================================\n"
                     "DeathWize - Chrome Extension Process Controller\n"
-                    "Version 1.2\n"
+                    "Version 1.3\n"
                     "Developed by Jason Wu\n"
                     "========================================================\n"
                     "\n"
                     "WHAT'S NEW:\n"
-                    "  - Delay between process scans is now customizable, thanks to the\n"
-                    "    new \"-i/--interval <delay_ms>\" flag. Try it out for yourself! \n"
-                    "  - Next-Gen Adaptive Allowlisting means Processes that repeatedly\n"
-                    "    fail to terminate are now handled dynamically based on failure\n"
-                    "    count, and allowlist now removes processes that have already  \n"
-                    "    been successfully terminated\n"
+                    "  - More flags added: --duration/-d now sets the program to run for\n"
+                    "    a specified time in seconds. SAVES EVEN MORE BATTERY THAN BEFORE\n"
+                    "    (that is, if you actually use it), and also the --help/-h flag,\n"
+                    "    which shows all available arguments.                         \n"
+                    "  - Added summary report: Now you can see how much work DeathWize\n"
+                    "    has done for you once you exit the program. Isn't that cool? \n"
                     "\n"
                     "Before you continue:\n"
                     "\n"
                     "Due to the limitations of the Task Manager and the nature of this\n"
                     "program, you will not be able to access other Chrome Extensions  \n"
-                    "while DeathWize is running. Please read the terms in the README  \n"
-                    "file, ensure you have opened the Chrome profile with the Linewize\n"
-                    "extension installed and save any unsaved work before proceeding. \n"
+                    "while DeathWize is running (but now you can, thanks to a new flag).\n"
+                    "Please read the terms in the README file, ensure you have opened \n"
+                    "the Chrome profile with the Linewize extension installed and save\n"
+                    "any unsaved work before proceeding. \n"
                     "\n"
                     "Continue? (Y/n) ";
     std::cout << msg;
@@ -206,26 +260,48 @@ int main(int argc, char* argv[]) {
             "All Chrome Extensions are now being killed. You have broken free \n"
             "from the constraints of web filtering and you should be able to  \n"
             "access any website while this window is open (can be minimized). \n"
+            "NOTE: For best effectiveness, please use a VPN with this program.\n"
+            "\n"
             "Press [Ctrl]+[C] to exit.\n"
             "\n"
             "Debug statements will be shown below:";
         std::cout << msg << std::endl;
 
+        std::signal(SIGINT, signalHandler);
+        auto start = std::chrono::steady_clock::now();
         while (true) {
-            std::vector<DWORD> chromePIDs = FindChromeExtensionProcesses();
-
-            for (DWORD pid : chromePIDs) {
-                KillProcessByID(pid);
+            // If runDurationSec is set, check if time is up
+            if (runDurationSec > 0) {
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+                if (elapsed >= runDurationSec) {
+                    std::cout << "[INFO] Run duration reached (" << runDurationSec << " seconds). Exiting." << std::endl;
+                    break;
+                }
             }
-
+            std::vector<DWORD> chromePIDs = FindChromeExtensionProcesses();
+            totalFound += chromePIDs.size();
+            for (DWORD pid : chromePIDs) {
+                // Check if process will be skipped due to backoff
+                auto it = ProcessAllowlist.find(pid);
+                if (it != ProcessAllowlist.end() && it->second.failCount > 0 && it->second.shouldBackoff()) {
+                    totalSkipped++;
+                    KillProcessByID(pid); // still prints skip message
+                } else {
+                    bool result = KillProcessByID(pid);
+                    if (result) totalTerminated++;
+                    else totalFailed++;
+                }
+            }
             Sleep(scanIntervalMs);
         }
+        PrintSummaryReport();
     }
     return 0;
 }
 
 // If you want to compile from source:
 // compile with: g++ deathwize.cpp -o deathwize.exe -static
-// run with: ./deathwize [-i/--interval <delay_ms>]
+// run with: ./deathwize [-i/--interval <delay_ms>] [-d/--duration <seconds>]
 
 // I recommend that you save the run command in a batch file for easy access.
