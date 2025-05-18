@@ -1,6 +1,6 @@
 ========================================================
 DeathWize – Chrome Extension Process Controller
-Version 1.2
+Version 1.3
 Developed by Jason Wu
 ========================================================
 
