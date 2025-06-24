@@ -1,17 +1,18 @@
 /*
 ========================================================
 DeathWize – Chrome Extension Process Controller
-Version 1.3
+Version 1.4
 Developed by Jason Wu
 ========================================================
 
 WHAT'S NEW:
-  - More flags added: --duration/-d now sets the program to run for
-    a specified time in seconds. SAVES EVEN MORE BATTERY THAN BEFORE
-    (that is, if you actually use it), and also the --help/-h flag, 
-    which shows all available arguments.
-  - Added summary report: Now you can see how much work DeathWize
-    has done for you once you exit the program. Isn't that cool?
+  - Pressing [Esc] now exits the program and shows the summary report
+    (used to be [Ctrl]+[C]).
+  - Fixed: Program interruption no longer interferes with the run 
+    duration feature.
+  - Improved reliability and user experience for exiting and reporting.
+  - Re-worded Confirmation Message since the old one was in dire need
+    of replacement.
 */
 
 #include <windows.h>
@@ -26,6 +27,7 @@ WHAT'S NEW:
 #include <chrono>
 #include <iomanip>
 #include <csignal>
+#include <conio.h>
 
 #ifdef min
 #undef min
@@ -229,47 +231,56 @@ int main(int argc, char* argv[]) {
     std::string msg = 
                     "========================================================\n"
                     "DeathWize - Chrome Extension Process Controller\n"
-                    "Version 1.3\n"
+                    "Version 1.4\n"
                     "Developed by Jason Wu\n"
                     "========================================================\n"
                     "\n"
-                    "WHAT'S NEW:\n"
-                    "  - More flags added: --duration/-d now sets the program to run for\n"
-                    "    a specified time in seconds. SAVES EVEN MORE BATTERY THAN BEFORE\n"
-                    "    (that is, if you actually use it), and also the --help/-h flag,\n"
-                    "    which shows all available arguments.                         \n"
-                    "  - Added summary report: Now you can see how much work DeathWize\n"
-                    "    has done for you once you exit the program. Isn't that cool? \n"
+                    "WHAT'S NEW: \n"
+                    "  - Pressing [Esc] now exits the program and shows the summary report\n"
+                    "    (used to be [Ctrl]+[C]).\n"
+                    "  - Fixed: Program interruption no longer interferes with the run \n"
+                    "    duration feature.\n"
+                    "  - Improved reliability and user experience for exiting and reporting.\n"
+                    "  - Re-worded Confirmation Message since the old one was in dire need\n"
+                    "    of replacement.\n"
                     "\n"
                     "Before you continue:\n"
                     "\n"
-                    "Due to the limitations of the Task Manager and the nature of this\n"
-                    "program, you will not be able to access other Chrome Extensions  \n"
-                    "while DeathWize is running (but now you can, thanks to a new flag).\n"
-                    "Please read the terms in the README file, ensure you have opened \n"
-                    "the Chrome profile with the Linewize extension installed and save\n"
-                    "any unsaved work before proceeding. \n"
+                    "Please ensure you have opened the Chrome profile with the extensions\n"
+                    "to be killed installed and save any unsaved work before proceeding. \n"
+                    "\n"
+                    "YOUR USAGE OF DEATHWIZE IS CONDUCTED AT YOUR OWN RISK. I DO NOT \n"
+                    "ACCEPT ANY RESPONSIBILITY FOR ANY LIABILITY OR DAMAGES THAT ARISE\n"
+                    "OUT OF THE USE OF THIS SOFTWARE. \n" 
+                    "Full terms are outlined in the README.txt file. By replying Y in\n"
+                    "the prompt below, I assume that you accept those terms.\n"
                     "\n"
                     "Continue? (Y/n) ";
     std::cout << msg;
     char reply;
     std::cin >> reply;
     if (reply == 'Y' || reply == 'y') {
-
         msg = "\n"
             "All Chrome Extensions are now being killed. You have broken free \n"
             "from the constraints of web filtering and you should be able to  \n"
             "access any website while this window is open (can be minimized). \n"
-            "NOTE: For best effectiveness, please use a VPN with this program.\n"
+            "TIP: For best results, please use a VPN with this program. \n"
             "\n"
-            "Press [Ctrl]+[C] to exit.\n"
+            "Press [Esc] to exit and show summary report.\n"
             "\n"
             "Debug statements will be shown below:";
         std::cout << msg << std::endl;
 
-        std::signal(SIGINT, signalHandler);
         auto start = std::chrono::steady_clock::now();
         while (true) {
+            // Check for Esc key press
+            if (_kbhit()) {
+                int ch = _getch();
+                if (ch == 27) { // 27 is ASCII for Esc
+                    std::cout << "[INFO] Escape key pressed. Exiting and showing summary report." << std::endl;
+                    break;
+                }
+            }
             // If runDurationSec is set, check if time is up
             if (runDurationSec > 0) {
                 auto now = std::chrono::steady_clock::now();
